@@ -320,22 +320,41 @@ Panel {
 
   // ------------------------------------------------------------- bar button
   readonly property string barGlyph: "\u{F021A}"
-  readonly property string barLabel:
-    showCount && noteCount > 0 ? barGlyph + " " + noteCount : barGlyph
+  readonly property bool countVisible: showCount && noteCount > 0
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
-  WidgetButton {
+  BarIconButton {
     id: button
 
     anchors.fill: parent
     bar: root.bar
-    text: root.barLabel
-    fontSize: Style.bar.iconFont
+    text: root.barGlyph
     tooltipText: Notes.tooltip(root.visibleNotes)
     active: root.opened
     onPressed: function(b) { if (b === Qt.LeftButton) root.toggle() }
+
+    // Count as a corner badge rather than a second glyph-sized run beside the
+    // icon: at a glance the icon is the thing you aim at, and the number is a
+    // detail hanging off it. Sits in the slot's bottom-right, outside the
+    // centered icon canvas, so it never sits on top of the glyph itself.
+    Text {
+      id: countBadge
+
+      visible: root.countVisible
+      textFormat: Text.PlainText
+      text: root.noteCount > 99 ? "99+" : String(root.noteCount)
+      color: button.active && button.useActiveColor ? button.activeColor : button.foreground
+      font.family: root.face
+      font.pixelSize: Math.max(7, Math.round(Style.bar.iconFont * 0.68))
+      font.bold: true
+
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      anchors.rightMargin: Style.spaceReal(1)
+      anchors.bottomMargin: Style.spaceReal(3)
+    }
   }
 
   // ------------------------------------------------------------------ panel
