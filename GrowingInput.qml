@@ -30,6 +30,11 @@ Item {
   property int fontSize: Style.font.body
   property int minLines: 1
   property int maxLines: 8
+
+  // Dimmed by alpha rather than the kit's Qt.darker(): darkening only reads as
+  // "fainter" against a dark background — on a light theme it drives the
+  // placeholder *towards* the text colour and makes it louder, not quieter.
+  property real placeholderOpacity: 0.35
   property real horizontalPadding: Style.spacing.controlPaddingX
   property real verticalPadding: Style.spacing.inputPaddingY
 
@@ -108,7 +113,7 @@ Item {
       color: root.foreground
       selectionColor: Style.selectionFillFor(root.foreground, root.accent)
       selectedTextColor: root.foreground
-      placeholderTextColor: Qt.darker(root.foreground, 1.6)
+      placeholderTextColor: Util.alpha(root.foreground, root.placeholderOpacity)
 
       leftPadding: root.horizontalPadding
       rightPadding: root.horizontalPadding
