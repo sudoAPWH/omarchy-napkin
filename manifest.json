@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "id": "omarchy-napkin",
+  "name": "Napkin",
+  "version": "1.0.0",
+  "author": "Alexander Hutlet",
+  "description": "Quick notes from the bar — jot a thought, it saves itself. Click a note to copy, edit, or delete it",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Napkin",
+    "description": "Quick notes from the bar — jot a thought, it saves itself. Click a note to copy, edit, or delete it",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "storePath": "",
+      "composeMaxLines": 8,
+      "previewLines": 3,
+      "showCount": true,
+      "newestFirst": true
+    },
+    "schema": [
+      {
+        "key": "storePath",
+        "type": "string",
+        "label": "Notes file (blank for the default location)"
+      },
+      {
+        "key": "composeMaxLines",
+        "type": "number",
+        "label": "Lines the input grows to before it scrolls"
+      },
+      {
+        "key": "previewLines",
+        "type": "number",
+        "label": "Lines shown per note before it is truncated"
+      },
+      {
+        "key": "showCount",
+        "type": "boolean",
+        "label": "Show the note count on the bar"
+      },
+      {
+        "key": "newestFirst",
+        "type": "boolean",
+        "label": "List newest notes first"
+      }
+    ]
+  },
+  "license": "MIT"
+}
