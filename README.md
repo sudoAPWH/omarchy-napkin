@@ -31,19 +31,34 @@ The bar icon carries the note count; hover it to see the most recent few.
 ## Install
 
 ```bash
-omarchy plugin add https://git.hutlet.ca/ahutlet/omarchy-napkin.git --enable --yes
+omarchy plugin add https://github.com/sudoAPWH/omarchy-napkin.git --enable --yes
 ```
 
 By hand instead:
 
 ```bash
-git clone https://git.hutlet.ca/ahutlet/omarchy-napkin.git ~/.config/omarchy/plugins/omarchy-napkin
+git clone https://github.com/sudoAPWH/omarchy-napkin.git ~/.config/omarchy/plugins/omarchy-napkin
 omarchy-shell shell rescanPlugins
 omarchy plugin enable omarchy-napkin --section right
 ```
 
 The directory name must match the `id` in `manifest.json`. Move the widget with
 `omarchy bar move omarchy-napkin --section right`.
+
+## Removing it
+
+```bash
+omarchy plugin remove omarchy-napkin --yes
+```
+
+To take it off the bar but keep it installed, `omarchy plugin disable
+omarchy-napkin` instead.
+
+Removal leaves your notes alone. Delete them yourself if you want them gone:
+
+```bash
+rm -rf ~/.local/share/napkin
+```
 
 ## Notes on disk
 
