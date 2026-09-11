@@ -6,6 +6,15 @@
 
 var STORE_VERSION = 1
 
+// Bounds on what the panel will take from disk. The store is a plain file the
+// user can edit, sync, or point somewhere unexpected, so none of these are
+// trusted to be sane. They are deliberately far above any hand-written store:
+// hitting one means the file is machine-generated, corrupt, or not ours, and
+// the panel refuses to write rather than quietly truncating someone's notes.
+var MAX_STORE_BYTES = 4 * 1024 * 1024
+var MAX_NOTES = 5000
+var MAX_NOTE_CHARS = 16384
+
 // Monotonic within a session and prefixed with the mint time, so ids stay
 // unique across two notes filed in the same millisecond without pulling in a
 // uuid dependency for what is a local-only key.
@@ -35,6 +44,7 @@ function normalizeNote(entry) {
   if (!entry || typeof entry !== "object") return null
   var text = normalizeText(entry.text)
   if (text.length === 0) return null
+  if (text.length > MAX_NOTE_CHARS) text = text.substring(0, MAX_NOTE_CHARS)
   var created = typeof entry.created === "string" && entry.created ? entry.created : nowIso()
   return {
     id: typeof entry.id === "string" && entry.id ? entry.id : mintId(),
@@ -48,26 +58,40 @@ function normalizeNote(entry) {
 // might leave behind: a bare array of notes, a bare array of strings, or the
 // versioned object. Anything unparseable reads as empty rather than throwing —
 // a corrupt store should cost you your notes' display, not the whole shell.
-function parseStore(raw) {
+function readStore(raw) {
+  var text = String(raw || "")
+
+  // Checked before JSON.parse rather than after: the point is to not hand a
+  // multi-megabyte string to the parser in the shell's own event loop.
+  if (text.length > MAX_STORE_BYTES) {
+    return { notes: [], oversize: true, truncated: false }
+  }
+
   var parsed
   try {
-    parsed = JSON.parse(String(raw || "").replace(/^\s+|\s+$/g, "") || "{}")
+    parsed = JSON.parse(text.replace(/^\s+|\s+$/g, "") || "{}")
   } catch (e) {
-    return []
+    return { notes: [], oversize: false, truncated: false }
   }
 
   var list = null
   if (Array.isArray(parsed)) list = parsed
   else if (parsed && Array.isArray(parsed.notes)) list = parsed.notes
-  if (!list) return []
+  if (!list) return { notes: [], oversize: false, truncated: false }
 
   var out = []
+  var truncated = false
   for (var i = 0; i < list.length; i++) {
+    if (out.length >= MAX_NOTES) { truncated = true; break }
     var raw_entry = list[i]
     var note = normalizeNote(typeof raw_entry === "string" ? { text: raw_entry } : raw_entry)
     if (note) out.push(note)
   }
-  return out
+  return { notes: out, oversize: false, truncated: truncated }
+}
+
+function parseStore(raw) {
+  return readStore(raw).notes
 }
 
 function serializeStore(notes) {

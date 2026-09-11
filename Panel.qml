@@ -50,10 +50,20 @@ Panel {
   property var notes: []
   property bool storeReady: false
 
-  // Set when the store directory cannot be created. A notes app that silently
-  // fails to save is worse than one that refuses to open, so this is surfaced
-  // in the header rather than logged and forgotten.
+  // Set when the store directory cannot be created or fails its safety check.
+  // A notes app that silently fails to save is worse than one that refuses to
+  // open, so this is surfaced in the header rather than logged and forgotten.
   property string storeError: ""
+
+  // Set when the file on disk is larger or longer than we are willing to read.
+  // We keep displaying whatever we did manage to load, but every write is
+  // refused: serializing our partial view over a store we only half-read would
+  // turn "this file is too big" into "your notes are gone".
+  property bool storeLocked: false
+
+  // The exact bytes of our last write, so the watcher echo is a string compare
+  // instead of re-serializing the whole store on every notification.
+  property string lastWritten: ""
 
   // The note whose action menu is open, and the note being edited. Only one of
   // the two is ever set — opening the editor closes the menu that launched it.
@@ -74,6 +84,19 @@ Panel {
 
   readonly property var visibleNotes: Notes.ordered(notes, newestFirst)
   readonly property int noteCount: notes.length
+
+  // The list is a Repeater in a Column, so every row it is given becomes a live
+  // item — there is no recycling and nothing is freed by scrolling past it.
+  // That is the right trade for the handful of notes this panel is actually
+  // for, and the wrong one for a store that grew without anyone watching, so
+  // the model is capped and the remainder is reported rather than built. The
+  // cap is far past what anyone scrolls to; it exists to keep a pathological
+  // file from instantiating thousands of items inside a process that has to
+  // stay responsive for the rest of the session.
+  readonly property int renderLimit: 500
+  readonly property var renderedNotes:
+    visibleNotes.length > renderLimit ? visibleNotes.slice(0, renderLimit) : visibleNotes
+  readonly property int hiddenCount: visibleNotes.length - renderedNotes.length
   readonly property color fg: bar ? bar.foreground : Color.foreground
   readonly property color accentColor: Color.accent
   readonly property color urgentColor: bar ? bar.urgent : Color.urgent
@@ -98,16 +121,33 @@ Panel {
   }
 
   function writeStore() {
-    if (!storeReady) return
-    storeFile.setText(Notes.serializeStore(notes))
+    if (!storeReady || storeLocked) return
+    var text = Notes.serializeStore(notes)
+    lastWritten = text
+    storeFile.setText(text)
   }
 
   function applyStore(raw) {
-    var parsed = Notes.parseStore(raw)
-
     // Our own write comes back through the file watcher. Re-assigning `notes`
     // on that echo would drop an edit made in the window between the write and
-    // the notification, so identical content is a no-op.
+    // the notification, so identical content is a no-op — cheaply, by matching
+    // the bytes we just wrote before falling back to parsing them.
+    if (raw === lastWritten) return
+
+    var result = Notes.readStore(raw)
+    var parsed = result.notes
+
+    // A store we could not read in full is displayed but never written back.
+    if (result.oversize || result.truncated) {
+      storeLocked = true
+      storeError = result.oversize
+        ? "notes file is too large to load — saving is off"
+        : "notes file has more than " + Notes.MAX_NOTES + " notes — saving is off"
+    } else if (storeLocked) {
+      storeLocked = false
+      storeError = ""
+    }
+
     if (Notes.serializeStore(parsed) === Notes.serializeStore(notes)) return
 
     // An external edit invalidates whatever the panel was pointing at.
@@ -198,18 +238,18 @@ Panel {
   }
 
   function moveCursor(delta) {
-    if (visibleNotes.length === 0) return
+    if (renderedNotes.length === 0) return
     if (cursorIndex === -1) {
-      cursorIndex = delta > 0 ? 0 : visibleNotes.length - 1
+      cursorIndex = delta > 0 ? 0 : renderedNotes.length - 1
     } else {
-      cursorIndex = Math.max(0, Math.min(visibleNotes.length - 1, cursorIndex + delta))
+      cursorIndex = Math.max(0, Math.min(renderedNotes.length - 1, cursorIndex + delta))
     }
     keys.forceActiveFocus()
   }
 
   function cursorNoteId() {
-    if (cursorIndex < 0 || cursorIndex >= visibleNotes.length) return ""
-    return visibleNotes[cursorIndex].id
+    if (cursorIndex < 0 || cursorIndex >= renderedNotes.length) return ""
+    return renderedNotes[cursorIndex].id
   }
 
   function handleMove(delta) {
@@ -289,19 +329,61 @@ Panel {
   }
 
   // FileView cannot watch a file whose directory does not exist yet, so the
-  // store path is only handed over once mkdir has returned.
+  // store path is only handed over once this has returned.
+  //
+  // It does more than mkdir. FileView resolves symlinks on write — an atomic
+  // write to a path that is a link lands on the link's target, not on the link
+  // — so a store path is only handed over after the directory holding it has
+  // been shown to be a real directory, owned by us, and not writable by anyone
+  // else. On a stock system $HOME is already 0700 and nothing else can reach
+  // in, but `storePath` is a free-text setting: point it at a shared directory
+  // and that stops being true. New directories are created 0700; existing ones
+  // are checked rather than chmod'd, since silently loosening or tightening a
+  // directory the user already made is not ours to do.
+  //
+  // The path goes through argv rather than the script body — there is no
+  // quoting to get wrong that way.
+  readonly property string guardScript: `
+    set -u
+    path=$1
+    dir=$(dirname "$path")
+    mkdir -p -m 700 "$dir" || exit 2
+    [ -L "$dir" ] && exit 3
+    [ -d "$dir" ] || exit 4
+    [ -O "$dir" ] || exit 5
+    [ -n "$(find "$dir" -maxdepth 0 -perm /022 2>/dev/null)" ] && exit 6
+    [ -L "$path" ] && exit 7
+    if [ -e "$path" ]; then
+      [ -f "$path" ] || exit 8
+      [ -O "$path" ] || exit 9
+    fi
+    exit 0
+  `
+
   Process {
     id: ensureDir
-    command: ["mkdir", "-p", root.storeDir]
+    command: ["bash", "-c", root.guardScript, "napkin", root.storePath]
     running: false
     onExited: function(code) {
       if (code === 0) {
         root.storeError = ""
         root.storeReady = true
-      } else {
-        root.storeError = "can't write to " + root.storeDir
-        console.warn("napkin: mkdir failed (" + code + ") for " + root.storeDir)
+        return
       }
+
+      var reason = ({
+        2: "can't create " + root.storeDir,
+        3: "the notes folder is a symlink",
+        4: "the notes folder isn't a folder",
+        5: "the notes folder belongs to another user",
+        6: "the notes folder is writable by other users",
+        7: "the notes file is a symlink",
+        8: "the notes path isn't a regular file",
+        9: "the notes file belongs to another user"
+      })[code] || "can't write to " + root.storeDir
+
+      root.storeError = reason
+      console.warn("napkin: refusing to use " + root.storePath + " — " + reason + " (" + code + ")")
     }
   }
 
@@ -567,7 +649,7 @@ Panel {
 
               Repeater {
                 id: rows
-                model: root.visibleNotes
+                model: root.renderedNotes
 
                 delegate: NoteRow {
                   required property int index
@@ -600,6 +682,18 @@ Panel {
                     root.focusCompose()
                   }
                 }
+              }
+
+              Text {
+                visible: root.hiddenCount > 0
+                width: notesColumn.width
+                padding: Style.spacing.controlPaddingY
+                horizontalAlignment: Text.AlignHCenter
+                text: "… and " + root.hiddenCount + " older "
+                      + (root.hiddenCount === 1 ? "note" : "notes") + " not shown"
+                color: root.dim(0.5)
+                font.family: root.face
+                font.pixelSize: Style.font.bodySmall
               }
             }
 
