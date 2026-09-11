@@ -69,6 +69,12 @@ rm -rf ~/.local/share/napkin
 One JSON file, safe to edit by hand or keep in a dotfiles repo — the panel
 watches it and picks up outside changes live.
 
+The directory is created `0700`. A store path that is a symlink, that you don't
+own, or that sits in a directory other users can write to is refused rather than
+used, with the reason shown in the panel header. Past 4 MB or 5000 notes the
+panel displays what it can and turns saving off, instead of writing a partial
+view back over a file it only half-read.
+
 ## Settings
 
 Inline on the widget's entry in `~/.config/omarchy/shell.json`:
@@ -79,7 +85,7 @@ Inline on the widget's entry in `~/.config/omarchy/shell.json`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `storePath` | `~/.local/share/napkin/notes.json` | Where notes are written |
+| `storePath` | `~/.local/share/napkin/notes.json` | Where notes are written. Must be a path you own, somewhere other users can't write |
 | `composeMaxLines` | `8` | Lines the input grows to before it scrolls |
 | `previewLines` | `3` | Lines shown per note before it is truncated |
 | `showCount` | `true` | Show the note count beside the bar icon |
