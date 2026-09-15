@@ -23,12 +23,17 @@ Item {
   property int previewLines: 3
   property int editorMaxLines: 10
 
+  // What the editor opens with. The panel owns it and hands it back if this row
+  // is rebuilt mid-edit; every keystroke is reported up through editTextEdited.
+  property string editText: ""
+
   // Emitted with the row's geometry in `reporter` coordinates, so the panel
   // can float the action menu against the row — and flip it above when the row
   // sits near the bottom — without this item needing to know anything about
   // the surface it lives on.
   property Item reporter: null
   signal menuRequested(real x, real top, real rowWidth, real rowHeight)
+  signal editTextEdited(string text)
   signal editCommitted(string text)
   signal editCancelled()
 
@@ -38,7 +43,7 @@ Item {
 
   function beginEdit() {
     if (editorLoader.item) {
-      editorLoader.item.text = root.noteText
+      editorLoader.item.text = root.editText
       editorLoader.item.forceEditFocus()
       editorLoader.item.moveCursorToEnd()
     }
@@ -126,7 +131,7 @@ Item {
       fontFamily: root.fontFamily
       minLines: 1
       maxLines: root.editorMaxLines
-      text: root.noteText
+      onTextChanged: root.editTextEdited(text)
       onSubmitted: root.editCommitted(text)
       onCancelled: root.editCancelled()
     }

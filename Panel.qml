@@ -29,17 +29,32 @@ Panel {
   ipcTarget: "omarchy-napkin"
 
   // ------------------------------------------------------------- settings
-  readonly property string dataHome:
-    Quickshell.env("XDG_DATA_HOME") || (Quickshell.env("HOME") + "/.local/share")
-  readonly property string defaultStorePath: dataHome + "/napkin/notes.json"
-  readonly property string storePath: {
-    var configured = String(setting("storePath", "")).replace(/^\s+|\s+$/g, "")
-    if (configured.length === 0) return defaultStorePath
-    return configured.charAt(0) === "~"
-      ? Quickshell.env("HOME") + configured.substring(1)
-      : configured
+  // A relative XDG_DATA_HOME is invalid by the spec and has to be ignored.
+  readonly property string dataHome: {
+    var xdg = Quickshell.env("XDG_DATA_HOME")
+    return xdg && xdg.charAt(0) === "/" ? xdg : Quickshell.env("HOME") + "/.local/share"
   }
-  readonly property string storeDir: storePath.replace(/\/[^\/]*$/, "")
+  readonly property string defaultStorePath: dataHome + "/napkin/notes.json"
+
+  // The configured path, expanded, or the reason it can't be used. Only a bare
+  // `~/` expands: `~bob/notes.json` means another user's home, and pasting HOME
+  // in front of "bob/..." would quietly point somewhere else entirely.
+  readonly property var storeTarget: {
+    var configured = String(setting("storePath", "")).replace(/^\s+|\s+$/g, "")
+    if (configured.length === 0) return { path: defaultStorePath, problem: "" }
+    if (configured === "~") return { path: "", problem: "storePath must name a file, not a folder" }
+
+    var p = configured
+    if (p.indexOf("~/") === 0) p = Quickshell.env("HOME") + p.substring(1)
+    else if (p.charAt(0) === "~") return { path: "", problem: "storePath can't use ~user paths" }
+
+    if (p.charAt(0) !== "/") return { path: "", problem: "storePath must be an absolute path" }
+    if (p.indexOf("\u0000") !== -1) return { path: "", problem: "storePath contains a null character" }
+    var name = p.substring(p.lastIndexOf("/") + 1)
+    if (name === "" || name === "." || name === "..")
+      return { path: "", problem: "storePath must name a file, not a folder" }
+    return { path: p, problem: "" }
+  }
 
   readonly property int composeMaxLines: Math.max(1, Math.min(20, Number(setting("composeMaxLines", 8)) || 8))
   readonly property int previewLines: Math.max(1, Math.min(12, Number(setting("previewLines", 3)) || 3))
@@ -47,28 +62,26 @@ Panel {
   readonly property bool newestFirst: setting("newestFirst", true) !== false
 
   // ---------------------------------------------------------------- state
-  property var notes: []
-  property bool storeReady: false
+  // Everything about the file lives in Store.qml. `notes` is its list, replaced
+  // wholesale on every change.
+  readonly property var notes: store.notes
 
-  // Set when the store directory cannot be created or fails its safety check.
-  // A notes app that silently fails to save is worse than one that refuses to
-  // open, so this is surfaced in the header rather than logged and forgotten.
-  property string storeError: ""
-
-  // Set when the file on disk is larger or longer than we are willing to read.
-  // We keep displaying whatever we did manage to load, but every write is
-  // refused: serializing our partial view over a store we only half-read would
-  // turn "this file is too big" into "your notes are gone".
-  property bool storeLocked: false
-
-  // The exact bytes of our last write, so the watcher echo is a string compare
-  // instead of re-serializing the whole store on every notification.
-  property string lastWritten: ""
+  // A problem with the store is surfaced in the header rather than logged and
+  // forgotten: a notes app that silently fails to save is worse than one that
+  // refuses to take the note. `notice` is the short-lived kind, for an action
+  // that was just turned down.
+  readonly property string statusText: store.error !== "" ? store.error : notice
+  property string notice: ""
 
   // The note whose action menu is open, and the note being edited. Only one of
   // the two is ever set — opening the editor closes the menu that launched it.
   property string menuNoteId: ""
   property string editingNoteId: ""
+
+  // The text of the note being edited, held here and not only in the row's
+  // editor: the list rebuilds every row whenever the notes change, so an outside
+  // edit landing mid-edit would otherwise throw away what you were typing.
+  property string editDraft: ""
   property int menuIndex: 0
   property real menuX: 0
   property real menuRowTop: 0
@@ -107,110 +120,129 @@ Panel {
   }
 
   // ------------------------------------------------------------ persistence
-  //
-  // Debounced rather than written on every keystroke: filing a note is one
-  // write, but editing one in place would otherwise be a write per character.
-  function scheduleSave() {
-    saveTimer.restart()
-  }
-
-  function flushSave() {
-    if (!saveTimer.running) return
-    saveTimer.stop()
-    writeStore()
-  }
-
-  function writeStore() {
-    if (!storeReady || storeLocked) return
-    var text = Notes.serializeStore(notes)
-    lastWritten = text
-    storeFile.setText(text)
-  }
-
-  function applyStore(raw) {
-    // Our own write comes back through the file watcher. Re-assigning `notes`
-    // on that echo would drop an edit made in the window between the write and
-    // the notification, so identical content is a no-op — cheaply, by matching
-    // the bytes we just wrote before falling back to parsing them.
-    if (raw === lastWritten) return
-
-    var result = Notes.readStore(raw)
-    var parsed = result.notes
-
-    // A store we could not read in full is displayed but never written back.
-    if (result.oversize || result.truncated) {
-      storeLocked = true
-      storeError = result.oversize
-        ? "notes file is too large to load — saving is off"
-        : "notes file has more than " + Notes.MAX_NOTES + " notes — saving is off"
-    } else if (storeLocked) {
-      storeLocked = false
-      storeError = ""
-    }
-
-    if (Notes.serializeStore(parsed) === Notes.serializeStore(notes)) return
-
-    // An external edit invalidates whatever the panel was pointing at.
-    notes = parsed
-    if (Notes.indexOfId(notes, editingNoteId) === -1) editingNoteId = ""
-    if (Notes.indexOfId(notes, menuNoteId) === -1) closeMenu()
-    cursorIndex = Math.min(cursorIndex, notes.length - 1)
-  }
-
   function mutate(next) {
-    if (next === notes) return
-    notes = next
-    scheduleSave()
+    return store.commit(next)
+  }
+
+  function showNotice(text) {
+    notice = text
+    noticeTimer.restart()
+  }
+
+  // Turns a change down and says why, unless the store's own error is already
+  // on screen saying it.
+  function refuse() {
+    if (store.error === "") showNotice(store.loaded ? "saving is off" : "still loading notes")
+    return false
+  }
+
+  function refuseTooLong() {
+    showNotice("notes are limited to " + Notes.MAX_NOTE_CHARS + " characters")
+    return false
+  }
+
+  // The store replaced the list from disk, so whatever the panel was pointing
+  // at may be gone.
+  function storeReplaced() {
+    if (editingNoteId !== "" && Notes.indexOfId(notes, editingNoteId) === -1) cancelEdit()
+    if (menuNoteId !== "" && Notes.indexOfId(notes, menuNoteId) === -1) closeMenu()
+    cursorIndex = Math.min(cursorIndex, renderedNotes.length - 1)
   }
 
   // ---------------------------------------------------------------- actions
+  // Every action checks the store first. A turned-down note stays in the input
+  // and a turned-down edit stays open, so nothing typed is lost to a store that
+  // can't save right now.
   function fileNote(text) {
     if (Notes.isBlank(text)) return false
-    mutate(Notes.addNote(notes, text))
+    if (!store.canWrite) return refuse()
+    if (Notes.isTooLong(text)) return refuseTooLong()
+    if (!mutate(Notes.addNote(notes, text))) return refuse()
     cursorIndex = -1
     return true
   }
 
+  // Returns whether the edit ended.
   function commitEdit(id, text) {
-    mutate(Notes.updateNote(notes, id, text))
+    if (!store.canWrite) return refuse()
+    if (Notes.isTooLong(text)) return refuseTooLong()
+    if (!mutate(Notes.updateNote(notes, id, text))) return refuse()
     editingNoteId = ""
+    editDraft = ""
+    focusCompose()
+    return true
+  }
+
+  function cancelEdit() {
+    editingNoteId = ""
+    editDraft = ""
     focusCompose()
   }
 
   function deleteNote(id) {
     var note = Notes.findById(notes, id)
     if (!note) return
+    if (!store.canWrite) {
+      refuse()
+      return
+    }
 
     // Position is part of what undo restores — dropping a note back on top of
     // the list would silently reorder it.
-    pendingUndo = { note: note, index: Notes.indexOfId(notes, id) }
+    var index = Notes.indexOfId(notes, id)
+    if (!mutate(Notes.removeNote(notes, id))) {
+      refuse()
+      return
+    }
+    pendingUndo = { note: note, index: index }
     undoTimer.restart()
 
-    mutate(Notes.removeNote(notes, id))
-    if (editingNoteId === id) editingNoteId = ""
+    if (editingNoteId === id) cancelEdit()
     closeMenu()
-    cursorIndex = Math.min(cursorIndex, notes.length - 1)
+    cursorIndex = Math.min(cursorIndex, renderedNotes.length - 1)
   }
 
   function undoDelete() {
     if (!pendingUndo) return
-    var restored = notes.slice()
-    restored.splice(Math.min(pendingUndo.index, restored.length), 0, pendingUndo.note)
+    if (!store.canWrite) {
+      refuse()
+      return
+    }
+    var restored = Notes.restoreNote(notes, pendingUndo.note, pendingUndo.index)
     pendingUndo = null
     undoTimer.stop()
     mutate(restored)
   }
 
+  // Straight into wl-copy's stdin, with wl-copy named by absolute path. No shell
+  // in between, so the note is never quoted, parsed, or expanded on the way.
   function copyNote(id) {
     var note = Notes.findById(notes, id)
     if (!note) return
-    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(note.text) + " | wl-copy"])
+    var copier = copyProcess.createObject(root, { payload: note.text })
+    copier.running = true
     closeMenu()
   }
 
   function beginEdit(id) {
+    var note = Notes.findById(notes, id)
+    if (!note) return
     menuNoteId = ""
+    editDraft = note.text
     editingNoteId = id
+  }
+
+  // Closing the panel with an edit open keeps the edit, the way every other
+  // change here saves itself. An emptied editor counts as a change of heart,
+  // not a delete: deleting by clearing the text takes an explicit Enter. An edit
+  // the store turns down stays open for when the panel comes back.
+  function finishEditOnClose() {
+    if (editingNoteId === "") return
+    if (Notes.isBlank(editDraft)) {
+      cancelEdit()
+      return
+    }
+    commitEdit(editingNoteId, editDraft)
   }
 
   // ------------------------------------------------------------------ menu
@@ -294,33 +326,42 @@ Panel {
     return null
   }
 
+  // Walking the list with j/k could go past the bottom of the scrolled view,
+  // leaving the highlighted row, and any menu opened from it, out of sight.
+  onCursorIndexChanged: Qt.callLater(revealCursor)
+
+  function revealCursor() {
+    if (cursorIndex < 0 || !listFlick.interactive) return
+    var row = rows.itemAt(cursorIndex)
+    if (!row) return
+    if (row.y < listFlick.contentY)
+      listFlick.contentY = row.y
+    else if (row.y + row.height > listFlick.contentY + listFlick.height)
+      listFlick.contentY = row.y + row.height - listFlick.height
+  }
+
   // ------------------------------------------------------------- lifecycle
   onOpenedChanged: {
     if (opened) {
       cursorIndex = -1
       menuNoteId = ""
-      editingNoteId = ""
-      Qt.callLater(focusCompose)
+      store.recheck()
+      // An edit still open here is one the store turned down on close; it
+      // keeps the keyboard.
+      if (editingNoteId === "") Qt.callLater(focusCompose)
     } else {
-      flushSave()
-      if (compose.item) compose.item.clear()
+      // The compose draft is left alone on purpose: clicking away from the
+      // panel is not a decision to throw out a half-typed thought.
+      finishEditOnClose()
+      store.flush()
       pendingUndo = null
       undoTimer.stop()
     }
   }
 
-  // Quickshell evaluates `running` alongside `command` rather than after it,
-  // so the mkdir is armed here instead of inline — the same shape the
-  // first-party notification service uses for its state directories.
-  Component.onCompleted: ensureDir.running = true
-
-  Component.onDestruction: flushSave()
-
-  Timer {
-    id: saveTimer
-    interval: 400
-    onTriggered: root.writeStore()
-  }
+  // Store writes whatever is pending when it goes away itself; this only makes
+  // sure an open edit is part of it.
+  Component.onDestruction: finishEditOnClose()
 
   Timer {
     id: undoTimer
@@ -328,76 +369,33 @@ Panel {
     onTriggered: root.pendingUndo = null
   }
 
-  // FileView cannot watch a file whose directory does not exist yet, so the
-  // store path is only handed over once this has returned.
-  //
-  // It does more than mkdir. FileView resolves symlinks on write — an atomic
-  // write to a path that is a link lands on the link's target, not on the link
-  // — so a store path is only handed over after the directory holding it has
-  // been shown to be a real directory, owned by us, and not writable by anyone
-  // else. On a stock system $HOME is already 0700 and nothing else can reach
-  // in, but `storePath` is a free-text setting: point it at a shared directory
-  // and that stops being true. New directories are created 0700; existing ones
-  // are checked rather than chmod'd, since silently loosening or tightening a
-  // directory the user already made is not ours to do.
-  //
-  // The path goes through argv rather than the script body — there is no
-  // quoting to get wrong that way.
-  readonly property string guardScript: `
-    set -u
-    path=$1
-    dir=$(dirname "$path")
-    mkdir -p -m 700 "$dir" || exit 2
-    [ -L "$dir" ] && exit 3
-    [ -d "$dir" ] || exit 4
-    [ -O "$dir" ] || exit 5
-    [ -n "$(find "$dir" -maxdepth 0 -perm /022 2>/dev/null)" ] && exit 6
-    [ -L "$path" ] && exit 7
-    if [ -e "$path" ]; then
-      [ -f "$path" ] || exit 8
-      [ -O "$path" ] || exit 9
-    fi
-    exit 0
-  `
-
-  Process {
-    id: ensureDir
-    command: ["bash", "-c", root.guardScript, "napkin", root.storePath]
-    running: false
-    onExited: function(code) {
-      if (code === 0) {
-        root.storeError = ""
-        root.storeReady = true
-        return
-      }
-
-      var reason = ({
-        2: "can't create " + root.storeDir,
-        3: "the notes folder is a symlink",
-        4: "the notes folder isn't a folder",
-        5: "the notes folder belongs to another user",
-        6: "the notes folder is writable by other users",
-        7: "the notes file is a symlink",
-        8: "the notes path isn't a regular file",
-        9: "the notes file belongs to another user"
-      })[code] || "can't write to " + root.storeDir
-
-      root.storeError = reason
-      console.warn("napkin: refusing to use " + root.storePath + " — " + reason + " (" + code + ")")
-    }
+  Timer {
+    id: noticeTimer
+    interval: 4000
+    onTriggered: root.notice = ""
   }
 
-  FileView {
-    id: storeFile
+  Store {
+    id: store
+    path: root.storeTarget.path
+    pathProblem: root.storeTarget.problem
+    onExternalChange: root.storeReplaced()
+  }
 
-    path: root.storeReady ? root.storePath : ""
-    watchChanges: true
-    atomicWrites: true
-    printErrors: false
-
-    onLoaded: root.applyStore(text())
-    onLoadFailed: root.applyStore("")
-    onFileChanged: reload()
+  // One process per copy, so a second copy while the first is still running
+  // isn't dropped.
+  Component {
+    id: copyProcess
+    Process {
+      property string payload: ""
+      command: ["/usr/bin/wl-copy"]
+      stdinEnabled: true
+      onStarted: {
+        write(payload)
+        stdinEnabled = false
+      }
+      onRunningChanged: if (!running) destroy()
+    }
   }
 
   // ------------------------------------------------------------- bar button
@@ -413,7 +411,9 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     text: root.barGlyph
-    tooltipText: Notes.tooltip(root.visibleNotes)
+    // `notes` is stored newest-first, so the tooltip shows the most recent few
+    // whichever way round the list is set to display.
+    tooltipText: Notes.tooltip(root.notes)
     active: root.opened
     onPressed: function(b) { if (b === Qt.LeftButton) root.toggle() }
 
@@ -504,29 +504,42 @@ Panel {
           Item {
             id: trailing
 
+            // No wider than the space the title leaves, so a long message
+            // elides instead of running over "Napkin".
+            readonly property real room: parent.width - title.implicitWidth - Style.spacing.xl
+
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
-            implicitWidth: root.storeError !== ""
-              ? errorLabel.implicitWidth
+            implicitWidth: root.statusText !== ""
+              ? Math.min(errorLabel.implicitWidth, room)
               : (root.pendingUndo ? undoRow.implicitWidth : countLabel.implicitWidth)
             implicitHeight: Math.max(errorLabel.implicitHeight,
               Math.max(undoRow.implicitHeight, countLabel.implicitHeight))
 
             Text {
               id: errorLabel
-              visible: root.storeError !== ""
+              visible: root.statusText !== ""
+              width: Math.min(implicitWidth, trailing.room)
               textFormat: Text.PlainText
-              text: root.storeError
+              text: root.statusText
+              elide: Text.ElideRight
               color: root.urgentColor
               font.family: root.face
               font.pixelSize: Style.font.caption
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
+
+              HoverHandler { id: errorHover }
+
+              PanelToolTip {
+                visible: errorHover.hovered && errorLabel.truncated
+                text: root.statusText
+              }
             }
 
             Text {
               id: countLabel
-              visible: !root.pendingUndo && root.storeError === ""
+              visible: !root.pendingUndo && root.statusText === ""
               textFormat: Text.PlainText
               text: root.noteCount === 0
                 ? ""
@@ -540,7 +553,7 @@ Panel {
 
             Row {
               id: undoRow
-              visible: !!root.pendingUndo && root.storeError === ""
+              visible: !!root.pendingUndo && root.statusText === ""
               spacing: Style.spacing.sm
               anchors.right: parent.right
               anchors.verticalCenter: parent.verticalCenter
@@ -669,6 +682,7 @@ Panel {
                   fontFamily: root.face
 
                   editing: root.editingNoteId === modelData.id
+                  editText: root.editDraft
                   menuOpen: root.menuNoteId === modelData.id
                   hasCursor: root.cursorIndex === index
 
@@ -676,11 +690,9 @@ Panel {
                     root.cursorIndex = index
                     root.openMenu(modelData.id, x, top, rowWidth, rowHeight)
                   }
+                  onEditTextEdited: function(text) { if (editing) root.editDraft = text }
                   onEditCommitted: function(text) { root.commitEdit(modelData.id, text) }
-                  onEditCancelled: {
-                    root.editingNoteId = ""
-                    root.focusCompose()
-                  }
+                  onEditCancelled: root.cancelEdit()
                 }
               }
 
@@ -736,8 +748,12 @@ Panel {
           x: Math.max(0, Math.min(root.menuX + Style.space(12), parent.width - implicitWidth))
           y: belowY + implicitHeight <= parent.height
             ? belowY
-            : Math.max(0, aboveY)
+            : Math.max(0, Math.min(aboveY, parent.height - implicitHeight))
 
+          // The mouse and j/k share one selection. Hovering reports up here
+          // rather than setting the menu's own index, which would cut that
+          // binding and leave Enter acting on a row that isn't highlighted.
+          onRowHovered: function(index) { root.menuIndex = index }
           onCopyRequested: root.copyNote(root.menuNoteId)
           onEditRequested: root.beginEdit(root.menuNoteId)
           onDeleteRequested: root.deleteNote(root.menuNoteId)

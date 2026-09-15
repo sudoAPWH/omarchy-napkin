@@ -22,6 +22,10 @@ Item {
   signal editRequested()
   signal deleteRequested()
 
+  // Hover is reported, not applied: the panel owns the selection so the mouse
+  // and j/k move the same one.
+  signal rowHovered(int index)
+
   readonly property int count: 3
   readonly property real rowHeight: Math.max(Style.spacing.popupRowHeight, Style.space(28))
 
@@ -72,7 +76,7 @@ Item {
         height: root.rowHeight
 
         readonly property color tint: row.modelData.danger ? root.urgent : root.foreground
-        readonly property bool active: root.selectedIndex === row.index || rowHover.hovered
+        readonly property bool active: root.selectedIndex === row.index
 
         Rectangle {
           anchors.fill: parent
@@ -84,7 +88,7 @@ Item {
         HoverHandler {
           id: rowHover
           cursorShape: Qt.PointingHandCursor
-          onHoveredChanged: if (hovered) root.selectedIndex = row.index
+          onHoveredChanged: if (hovered) root.rowHovered(row.index)
         }
 
         MouseArea {

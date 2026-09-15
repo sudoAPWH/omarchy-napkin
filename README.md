@@ -15,6 +15,9 @@ Click any note for its menu: **Copy** puts it on the clipboard, **Edit** opens
 it in place, **Delete** removes it with an undo link in the header for eight
 seconds.
 
+Closing the panel keeps a half-typed note in the input for next time, and an
+edit you click away from is saved rather than dropped.
+
 The bar icon carries the note count; hover it to see the most recent few.
 
 ## Keyboard
@@ -67,13 +70,19 @@ rm -rf ~/.local/share/napkin
 ```
 
 One JSON file, safe to edit by hand or keep in a dotfiles repo — the panel
-watches it and picks up outside changes live.
+watches it and picks up outside changes live. A typo that leaves it unreadable
+doesn't cost you your notes: the panel keeps showing what it had, says what's
+wrong in its header, and won't save over the file until it reads cleanly again.
+Deleting the file clears your notes.
 
-The directory is created `0700`. A store path that is a symlink, that you don't
-own, or that sits in a directory other users can write to is refused rather than
-used, with the reason shown in the panel header. Past 4 MB or 5000 notes the
-panel displays what it can and turns saving off, instead of writing a partial
-view back over a file it only half-read.
+The folder is created `0700`, and the path is checked again before every save.
+A notes file that is a symlink, a file or folder you don't own, or any folder
+along the path that other users can write to is refused, with the reason in the
+header. A symlinked folder is fine, but it is pinned to where it pointed when
+the shell started; if it starts pointing somewhere else, saving stops until the
+shell restarts. Past 4 MB, 5000 notes, or 16,384 characters in one note, the
+panel shows what it can and turns saving off rather than writing a cut-down
+copy back over the file.
 
 ## Settings
 
@@ -85,10 +94,10 @@ Inline on the widget's entry in `~/.config/omarchy/shell.json`:
 
 | Key | Default | Meaning |
 |---|---|---|
-| `storePath` | `~/.local/share/napkin/notes.json` | Where notes are written. Must be a path you own, somewhere other users can't write |
+| `storePath` | `~/.local/share/napkin/notes.json` | Where notes are written: an absolute path, or one starting with `~/` |
 | `composeMaxLines` | `8` | Lines the input grows to before it scrolls |
 | `previewLines` | `3` | Lines shown per note before it is truncated |
-| `showCount` | `true` | Show the note count beside the bar icon |
+| `showCount` | `true` | Show the note count as a badge on the bar icon |
 | `newestFirst` | `true` | List newest notes first |
 
 ## License

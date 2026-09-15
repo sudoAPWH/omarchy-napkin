@@ -131,6 +131,9 @@ Item {
         }
         if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter) {
           if (event.modifiers & Qt.ShiftModifier) return  // let the newline through
+          // Mid-composition in an input method, Enter confirms the conversion;
+          // filing then would file half a word.
+          if (edit.inputMethodComposing) return
           root.submitted()
           event.accepted = true
           return
