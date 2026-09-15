@@ -75,14 +75,17 @@ doesn't cost you your notes: the panel keeps showing what it had, says what's
 wrong in its header, and won't save over the file until it reads cleanly again.
 Deleting the file clears your notes.
 
-The folder is created `0700`, and the path is checked again before every save.
-A notes file that is a symlink, a file or folder you don't own, or any folder
-along the path that other users can write to is refused, with the reason in the
-header. A symlinked folder is fine, but it is pinned to where it pointed when
-the shell started; if it starts pointing somewhere else, saving stops until the
-shell restarts. Past 4 MB, 5000 notes, or 16,384 characters in one note, the
-panel shows what it can and turns saving off rather than writing a cut-down
-copy back over the file.
+The folder is created `0700` and the file `0600`. Reading and writing go through
+`store-helper.py`, which checks each folder and the file as it opens them and
+works through those handles, so anything swapped in underneath is refused rather
+than followed. A symlink anywhere in the path, a file or folder owned by someone
+else, or a folder other users can write to stops saving, with the reason in the
+header. Past 4 MB, 5000 notes, or 16,384 characters in one note, the panel shows
+what it can and turns saving off rather than writing a cut-down copy back over
+the file.
+
+Uses `python3` and `inotifywait`, both part of Omarchy's base install, to read,
+write, and watch the notes file.
 
 ## Settings
 

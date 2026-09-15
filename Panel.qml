@@ -10,9 +10,9 @@ import "Notes.js" as Notes
 //
 // The whole point is the gap between having a thought and losing it, so the
 // panel opens with the cursor already in the input and Enter files the note.
-// There is no save button and no confirmation step anywhere: writes are
-// debounced to disk on every mutation, and a delete is undoable for a few
-// seconds rather than guarded by a dialog.
+// There is no save button and no confirmation step anywhere: every change is
+// written as it happens, and a delete is undoable for a few seconds rather
+// than guarded by a dialog.
 //
 // Notes live in one JSON file under XDG_DATA_HOME — not the state dir the
 // clipboard history uses, because these are documents the user wrote and
